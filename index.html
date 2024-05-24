@@ -1,1 +1,554 @@
-"Hello World"
+<html>
+  <meta name="Wang Tianchen" content="5121FG60" />
+  <style>
+    h1 {
+      text-align: center;
+      padding-top: 8px;
+      color: rgb(240, 22, 58);
+    }
+    p {
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+    }
+  </style>
+  <head>
+    <title>Shader Homework 2</title>
+  </head>
+
+  <body>
+    <article>
+      <header>
+        <h1>Phase 1 Translation</h1>
+        <p>
+          The box moves from the center to the position (-radius , 0) after
+          "anim1Time" seconds;
+        </p>
+      </header>
+      <header>
+        <h1>Phase 2 Rotation</h1>
+        <p>The box rotates around its own center in "2*pi" seconds.</p>
+      </header>
+      <header>
+        <h1>Phase 3 Spinning around</h1>
+        <p>
+          The box spins around the center of the canvas repeatedly with the
+          radius of "radius".
+        </p>
+      </header>
+    </article>
+    <canvas id="glCanvas" style="width: 400px; height: 400px" />
+    <!-- type="notjs" makes it not get identified as javascript. -->
+
+    <script id="vertex-shader" type="notjs">
+        #version 300 es
+        precision mediump float;
+        in vec4 pos;
+        out vec2 coord;
+        uniform float u_time;
+        out float time;
+        void main() {
+      coord = pos.xy;
+        gl_Position = pos;
+        time = u_time;
+        }
+    </script>
+    <script id="fragment-shader" type="notjs">
+            #version 300 es
+            precision mediump float;
+            in vec2 coord;
+            out vec4 color_out;
+            in float time;
+      vec3 mod289(vec3 x) {
+        return x - floor(x * (1.0 / 289.0)) * 289.0;
+      }
+
+      float mod289(float x) {
+        return x - floor(x * (1.0 / 289.0)) * 289.0;
+      }
+
+      // Permutation polynomial (ring size 289 = 17*17)
+      vec3 permute(vec3 x) {
+        return mod289(((x*34.0)+10.0)*x);
+      }
+
+      float permute(float x) {
+        return mod289(((x*34.0)+1.0)*x);
+      }
+
+      // Hashed 2-D gradients with an extra rotation.
+      // (The constant 0.0243902439 is 1/41)
+      vec2 rgrad2(vec2 p, float rot) {
+      #if 0
+      // Map from a line to a diamond such that a shift maps to a rotation.
+        float u = permute(permute(p.x) + p.y) * 0.0243902439 + rot; // Rotate by shift
+        u = 4.0 * fract(u) - 2.0;
+        // (This vector could be normalized, exactly or approximately.)
+        return vec2(abs(u)-1.0, abs(abs(u+1.0)-2.0)-1.0);
+      #else
+      // For more isotropic gradients, sin/cos can be used instead.
+        float u = permute(permute(p.x) + p.y) * 0.0243902439 + rot; // Rotate by shift
+        u = fract(u) * 6.28318530718; // 2*pi
+        return vec2(cos(u), sin(u));
+      #endif
+      }
+
+      //
+      // 2-D tiling simplex noise with rotating gradients and analytical derivative.
+      // The first component of the 3-element return vector is the noise value,
+      // and the second and third components are the x and y partial derivatives.
+      //
+      vec3 psrdnoise(vec2 pos, vec2 per, float rot) {
+        // Hack: offset y slightly to hide some rare artifacts
+        pos.y += 0.01;
+        // Skew to hexagonal grid
+        vec2 uv = vec2(pos.x + pos.y*0.5, pos.y);
+
+        vec2 i0 = floor(uv);
+        vec2 f0 = fract(uv);
+        // Traversal order
+        vec2 i1 = (f0.x > f0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+
+        // Unskewed grid points in (x,y) space
+        vec2 p0 = vec2(i0.x - i0.y * 0.5, i0.y);
+        vec2 p1 = vec2(p0.x + i1.x - i1.y * 0.5, p0.y + i1.y);
+        vec2 p2 = vec2(p0.x + 0.5, p0.y + 1.0);
+
+        // Integer grid point indices in (u,v) space
+        i1 = i0 + i1;
+        vec2 i2 = i0 + vec2(1.0, 1.0);
+
+        // Vectors in unskewed (x,y) coordinates from
+        // each of the simplex corners to the evaluation point
+        vec2 d0 = pos - p0;
+        vec2 d1 = pos - p1;
+        vec2 d2 = pos - p2;
+
+        // Wrap i0, i1 and i2 to the desired period before gradient hashing:
+        // wrap points in (x,y), map to (u,v)
+        vec3 xw = mod(vec3(p0.x, p1.x, p2.x), per.x);
+        vec3 yw = mod(vec3(p0.y, p1.y, p2.y), per.y);
+        vec3 iuw = xw + 0.5 * yw;
+        vec3 ivw = yw;
+
+        // Create gradients from indices
+        vec2 g0 = rgrad2(vec2(iuw.x, ivw.x), rot);
+        vec2 g1 = rgrad2(vec2(iuw.y, ivw.y), rot);
+        vec2 g2 = rgrad2(vec2(iuw.z, ivw.z), rot);
+
+        // Gradients dot vectors to corresponding corners
+        // (The derivatives of this are simply the gradients)
+        vec3 w = vec3(dot(g0, d0), dot(g1, d1), dot(g2, d2));
+
+        // Radial weights from corners
+        // 0.8 is the square of 2/sqrt(5), the distance from
+        // a grid point to the nearest simplex boundary
+        vec3 t = 0.8 - vec3(dot(d0, d0), dot(d1, d1), dot(d2, d2));
+
+        // Partial derivatives for analytical gradient computation
+        vec3 dtdx = -2.0 * vec3(d0.x, d1.x, d2.x);
+        vec3 dtdy = -2.0 * vec3(d0.y, d1.y, d2.y);
+
+        // Set influence of each surflet to zero outside radius sqrt(0.8)
+        if (t.x < 0.0) {
+          dtdx.x = 0.0;
+          dtdy.x = 0.0;
+      	t.x = 0.0;
+        }
+        if (t.y < 0.0) {
+          dtdx.y = 0.0;
+          dtdy.y = 0.0;
+      	t.y = 0.0;
+        }
+        if (t.z < 0.0) {
+          dtdx.z = 0.0;
+          dtdy.z = 0.0;
+      	t.z = 0.0;
+        }
+
+        // Fourth power of t (and third power for derivative)
+        vec3 t2 = t * t;
+        vec3 t4 = t2 * t2;
+        vec3 t3 = t2 * t;
+
+        // Final noise value is:
+        // sum of ((radial weights) times (gradient dot vector from corner))
+        float n = dot(t4, w);
+
+        // Final analytical derivative (gradient of a sum of scalar products)
+        vec2 dt0 = vec2(dtdx.x, dtdy.x) * 4.0 * t3.x;
+        vec2 dn0 = t4.x * g0 + dt0 * w.x;
+        vec2 dt1 = vec2(dtdx.y, dtdy.y) * 4.0 * t3.y;
+        vec2 dn1 = t4.y * g1 + dt1 * w.y;
+        vec2 dt2 = vec2(dtdx.z, dtdy.z) * 4.0 * t3.z;
+        vec2 dn2 = t4.z * g2 + dt2 * w.z;
+
+        return 11.0*vec3(n, dn0 + dn1 + dn2);
+      }
+
+      //
+      // 2-D tiling simplex noise with fixed gradients
+      // and analytical derivative.
+      // This function is implemented as a wrapper to "psrdnoise",
+      // at the minimal cost of three extra additions.
+      //
+      vec3 psdnoise(vec2 pos, vec2 per) {
+        return psrdnoise(pos, per, 0.0);
+      }
+
+      //
+      // 2-D tiling simplex noise with rotating gradients,
+      // but without the analytical derivative.
+      //
+      float psrnoise(vec2 pos, vec2 per, float rot) {
+        // Offset y slightly to hide some rare artifacts
+        pos.y += 0.001;
+        // Skew to hexagonal grid
+        vec2 uv = vec2(pos.x + pos.y*0.5, pos.y);
+
+        vec2 i0 = floor(uv);
+        vec2 f0 = fract(uv);
+        // Traversal order
+        vec2 i1 = (f0.x > f0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+
+        // Unskewed grid points in (x,y) space
+        vec2 p0 = vec2(i0.x - i0.y * 0.5, i0.y);
+        vec2 p1 = vec2(p0.x + i1.x - i1.y * 0.5, p0.y + i1.y);
+        vec2 p2 = vec2(p0.x + 0.5, p0.y + 1.0);
+
+        // Integer grid point indices in (u,v) space
+        i1 = i0 + i1;
+        vec2 i2 = i0 + vec2(1.0, 1.0);
+
+        // Vectors in unskewed (x,y) coordinates from
+        // each of the simplex corners to the evaluation point
+        vec2 d0 = pos - p0;
+        vec2 d1 = pos - p1;
+        vec2 d2 = pos - p2;
+
+        // Wrap i0, i1 and i2 to the desired period before gradient hashing:
+        // wrap points in (x,y), map to (u,v)
+        vec3 xw = mod(vec3(p0.x, p1.x, p2.x), per.x);
+        vec3 yw = mod(vec3(p0.y, p1.y, p2.y), per.y);
+        vec3 iuw = xw + 0.5 * yw;
+        vec3 ivw = yw;
+
+        // Create gradients from indices
+        vec2 g0 = rgrad2(vec2(iuw.x, ivw.x), rot);
+        vec2 g1 = rgrad2(vec2(iuw.y, ivw.y), rot);
+        vec2 g2 = rgrad2(vec2(iuw.z, ivw.z), rot);
+
+        // Gradients dot vectors to corresponding corners
+        // (The derivatives of this are simply the gradients)
+        vec3 w = vec3(dot(g0, d0), dot(g1, d1), dot(g2, d2));
+
+        // Radial weights from corners
+        // 0.8 is the square of 2/sqrt(5), the distance from
+        // a grid point to the nearest simplex boundary
+        vec3 t = 0.8 - vec3(dot(d0, d0), dot(d1, d1), dot(d2, d2));
+
+        // Set influence of each surflet to zero outside radius sqrt(0.8)
+        t = max(t, 0.0);
+
+        // Fourth power of t
+        vec3 t2 = t * t;
+        vec3 t4 = t2 * t2;
+
+        // Final noise value is:
+        // sum of ((radial weights) times (gradient dot vector from corner))
+        float n = dot(t4, w);
+
+        // Rescale to cover the range [-1,1] reasonably well
+        return 11.0*n;
+      }
+
+      //
+      // 2-D tiling simplex noise with fixed gradients,
+      // without the analytical derivative.
+      // This function is implemented as a wrapper to "psrnoise",
+      // at the minimal cost of three extra additions.
+      //
+      float psnoise(vec2 pos, vec2 per) {
+        return psrnoise(pos, per, 0.0);
+      }
+
+      //
+      // 2-D non-tiling simplex noise with rotating gradients and analytical derivative.
+      // The first component of the 3-element return vector is the noise value,
+      // and the second and third components are the x and y partial derivatives.
+      //
+      vec3 srdnoise(vec2 pos, float rot) {
+        // Offset y slightly to hide some rare artifacts
+        pos.y += 0.001;
+        // Skew to hexagonal grid
+        vec2 uv = vec2(pos.x + pos.y*0.5, pos.y);
+
+        vec2 i0 = floor(uv);
+        vec2 f0 = fract(uv);
+        // Traversal order
+        vec2 i1 = (f0.x > f0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+
+        // Unskewed grid points in (x,y) space
+        vec2 p0 = vec2(i0.x - i0.y * 0.5, i0.y);
+        vec2 p1 = vec2(p0.x + i1.x - i1.y * 0.5, p0.y + i1.y);
+        vec2 p2 = vec2(p0.x + 0.5, p0.y + 1.0);
+
+        // Integer grid point indices in (u,v) space
+        i1 = i0 + i1;
+        vec2 i2 = i0 + vec2(1.0, 1.0);
+
+        // Vectors in unskewed (x,y) coordinates from
+        // each of the simplex corners to the evaluation point
+        vec2 d0 = pos - p0;
+        vec2 d1 = pos - p1;
+        vec2 d2 = pos - p2;
+
+        vec3 x = vec3(p0.x, p1.x, p2.x);
+        vec3 y = vec3(p0.y, p1.y, p2.y);
+        vec3 iuw = x + 0.5 * y;
+        vec3 ivw = y;
+
+        // Avoid precision issues in permutation
+        iuw = mod289(iuw);
+        ivw = mod289(ivw);
+
+        // Create gradients from indices
+        vec2 g0 = rgrad2(vec2(iuw.x, ivw.x), rot);
+        vec2 g1 = rgrad2(vec2(iuw.y, ivw.y), rot);
+        vec2 g2 = rgrad2(vec2(iuw.z, ivw.z), rot);
+
+        // Gradients dot vectors to corresponding corners
+        // (The derivatives of this are simply the gradients)
+        vec3 w = vec3(dot(g0, d0), dot(g1, d1), dot(g2, d2));
+
+        // Radial weights from corners
+        // 0.8 is the square of 2/sqrt(5), the distance from
+        // a grid point to the nearest simplex boundary
+        vec3 t = 0.8 - vec3(dot(d0, d0), dot(d1, d1), dot(d2, d2));
+
+        // Partial derivatives for analytical gradient computation
+        vec3 dtdx = -2.0 * vec3(d0.x, d1.x, d2.x);
+        vec3 dtdy = -2.0 * vec3(d0.y, d1.y, d2.y);
+
+        // Set influence of each surflet to zero outside radius sqrt(0.8)
+        if (t.x < 0.0) {
+          dtdx.x = 0.0;
+          dtdy.x = 0.0;
+      	t.x = 0.0;
+        }
+        if (t.y < 0.0) {
+          dtdx.y = 0.0;
+          dtdy.y = 0.0;
+      	t.y = 0.0;
+        }
+        if (t.z < 0.0) {
+          dtdx.z = 0.0;
+          dtdy.z = 0.0;
+      	t.z = 0.0;
+        }
+
+        // Fourth power of t (and third power for derivative)
+        vec3 t2 = t * t;
+        vec3 t4 = t2 * t2;
+        vec3 t3 = t2 * t;
+
+        // Final noise value is:
+        // sum of ((radial weights) times (gradient dot vector from corner))
+        float n = dot(t4, w);
+
+        // Final analytical derivative (gradient of a sum of scalar products)
+        vec2 dt0 = vec2(dtdx.x, dtdy.x) * 4.0 * t3.x;
+        vec2 dn0 = t4.x * g0 + dt0 * w.x;
+        vec2 dt1 = vec2(dtdx.y, dtdy.y) * 4.0 * t3.y;
+        vec2 dn1 = t4.y * g1 + dt1 * w.y;
+        vec2 dt2 = vec2(dtdx.z, dtdy.z) * 4.0 * t3.z;
+        vec2 dn2 = t4.z * g2 + dt2 * w.z;
+
+        return 11.0*vec3(n, dn0 + dn1 + dn2);
+      }
+
+      //
+      // 2-D non-tiling simplex noise with fixed gradients and analytical derivative.
+      // This function is implemented as a wrapper to "srdnoise",
+      // at the minimal cost of three extra additions.
+      //
+      vec3 sdnoise(vec2 pos) {
+        return srdnoise(pos, 0.0);
+      }
+
+      //
+      // 2-D non-tiling simplex noise with rotating gradients,
+      // without the analytical derivative.
+      //
+      float srnoise(vec2 pos, float rot) {
+        // Offset y slightly to hide some rare artifacts
+        pos.y += 0.001;
+        // Skew to hexagonal grid
+        vec2 uv = vec2(pos.x + pos.y*0.5, pos.y);
+
+        vec2 i0 = floor(uv);
+        vec2 f0 = fract(uv);
+        // Traversal order
+        vec2 i1 = (f0.x > f0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+
+        // Unskewed grid points in (x,y) space
+        vec2 p0 = vec2(i0.x - i0.y * 0.5, i0.y);
+        vec2 p1 = vec2(p0.x + i1.x - i1.y * 0.5, p0.y + i1.y);
+        vec2 p2 = vec2(p0.x + 0.5, p0.y + 1.0);
+
+        // Integer grid point indices in (u,v) space
+        i1 = i0 + i1;
+        vec2 i2 = i0 + vec2(1.0, 1.0);
+
+        // Vectors in unskewed (x,y) coordinates from
+        // each of the simplex corners to the evaluation point
+        vec2 d0 = pos - p0;
+        vec2 d1 = pos - p1;
+        vec2 d2 = pos - p2;
+
+        // Wrap i0, i1 and i2 to the desired period before gradient hashing:
+        // wrap points in (x,y), map to (u,v)
+        vec3 x = vec3(p0.x, p1.x, p2.x);
+        vec3 y = vec3(p0.y, p1.y, p2.y);
+        vec3 iuw = x + 0.5 * y;
+        vec3 ivw = y;
+
+        // Avoid precision issues in permutation
+        iuw = mod289(iuw);
+        ivw = mod289(ivw);
+
+        // Create gradients from indices
+        vec2 g0 = rgrad2(vec2(iuw.x, ivw.x), rot);
+        vec2 g1 = rgrad2(vec2(iuw.y, ivw.y), rot);
+        vec2 g2 = rgrad2(vec2(iuw.z, ivw.z), rot);
+
+        // Gradients dot vectors to corresponding corners
+        // (The derivatives of this are simply the gradients)
+        vec3 w = vec3(dot(g0, d0), dot(g1, d1), dot(g2, d2));
+
+        // Radial weights from corners
+        // 0.8 is the square of 2/sqrt(5), the distance from
+        // a grid point to the nearest simplex boundary
+        vec3 t = 0.8 - vec3(dot(d0, d0), dot(d1, d1), dot(d2, d2));
+
+        // Set influence of each surflet to zero outside radius sqrt(0.8)
+        t = max(t, 0.0);
+
+        // Fourth power of t
+        vec3 t2 = t * t;
+        vec3 t4 = t2 * t2;
+
+        // Final noise value is:
+        // sum of ((radial weights) times (gradient dot vector from corner))
+        float n = dot(t4, w);
+
+        // Rescale to cover the range [-1,1] reasonably well
+        return 11.0*n;
+      }
+
+      //
+      // 2-D non-tiling simplex noise with fixed gradients,
+      // without the analytical derivative.
+      // This function is implemented as a wrapper to "srnoise",
+      // at the minimal cost of three extra additions.
+      // Note: if this kind of noise is all you want, there are faster
+      // GLSL implementations of non-tiling simplex noise out there.
+      // This one is included mainly for completeness and compatibility
+      // with the other functions in the file.
+      //
+      float snoise(vec2 pos) {
+        return srnoise(pos, 0.0);
+      }
+
+
+
+            void main() {
+               vec2 st = coord.xy;
+         float mask = 1.0;
+         mask *= step( 0.3, distance( st.xy, vec2(0.5, 0.4) ) );
+         mask *= step( 0.25, distance( st.xy, vec2(0.6, 0.7) ) );
+         mask *= step( 0.25, distance( st.xy, vec2(0.4, 0.7) ) );
+         color_out = vec4( st.x, st.y, 1., 1.0 );
+         color_out *= snoise(st);
+            }
+    </script>
+    <script id="program" type="text/javascript">
+      function createProgram(gl, vertexSrc, fragmentSrc) {
+        let vshd = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vshd, vertexSrc);
+        gl.compileShader(vshd);
+        if (!gl.getShaderParameter(vshd, gl.COMPILE_STATUS))
+          throw new Error(
+            "Unable to compile shader: " + gl.getShaderInfoLog(vshd)
+          );
+        let fshd = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fshd, fragmentSrc);
+        gl.compileShader(fshd);
+        if (!gl.getShaderParameter(fshd, gl.COMPILE_STATUS))
+          throw new Error(
+            "Unable to compile shader: " + gl.getShaderInfoLog(fshd)
+          );
+        let prog = gl.createProgram();
+        gl.attachShader(prog, vshd);
+        gl.attachShader(prog, fshd);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+          throw new Error(
+            "Unable to link program: " + gl.getProgramInfoLog(prog)
+          );
+        return prog;
+      }
+
+      var c = document.getElementById("glCanvas");
+      var gl = c.getContext("webgl2");
+      if (!gl) throw new Error("WebGL unsupported!");
+
+      // Clear screen
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      /*
+        2___3
+        |\  |
+        | \ |
+        |__\|
+        0   1
+       */
+      var vertexPosBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertexPosBuffer);
+      var vertices = [-1, -1, 1, -1, -1, 1, 1, 1];
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array(vertices),
+        gl.STATIC_DRAW
+      );
+      vertexPosBuffer.itemSize = 2;
+      vertexPosBuffer.numItems = 4;
+
+      // Create our shader program
+      var vs = document.querySelector("#vertex-shader").text.trim();
+      var fs = document.querySelector("#fragment-shader").text.trim();
+      var program = createProgram(gl, vs, fs);
+      gl.useProgram(program);
+
+      // Get and set vertex attribute
+      program.vertexPosAttrib = gl.getAttribLocation(program, "pos");
+      var timeLocation = gl.getUniformLocation(program, "u_time");
+      gl.enableVertexAttribArray(program.vertexPosAttrib);
+      gl.vertexAttribPointer(program.vertexPosAttrib, 2, gl.FLOAT, false, 0, 0);
+      // Draw triangles
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      function animate(t) {
+        gl.uniform1f(timeLocation, t / 1000); // convert from milis to seconds
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        requestAnimationFrame(animate);
+      }
+      animate();
+    </script>
+  </body>
+</html>
